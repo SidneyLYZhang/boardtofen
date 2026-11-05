@@ -1,0 +1,4 @@
+work/
+.boardtofen-selftest-*/
+__pycache__/
+*.pyc
