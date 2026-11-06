@@ -2,9 +2,17 @@
 
 **把二维国际象棋局面图，变成一串可验证的 FEN。**
 
-`boardtofen` 是一个可移植的 Agent Skill（技能名 `chess-diagram-to-fen`）。它把“看图写 FEN”从一次容易出错的目测，变成一条有中间产物的流水线：**双读、逐格仲裁、合法性检查、审计图**。识别由模型完成，几何切分、差异比对、FEN 组装和终检由脚本兜底。
+`boardtofen` 是一个可移植的 Agent Skill（技能名 `chess-diagram-to-fen`）。它用开源的 **2d-chess-ocr** 检测模型找出棋盘、方向、64 个格子和每格棋子，再用棋规约束和逐格审计图兜底。识别不再依赖“看一眼写下来”，而是一条有中间产物、可复核的流水线：
 
-- 适用于书籍、试卷、网页截图里的平面棋盘。
+1. 找到 8×8 棋盘并裁切；
+2. 判断白方视角还是黑方视角；
+3. 按顺序拆出 64 个格子；
+4. 用 2d-chess-ocr 模型识别每个格子；
+5. 生成 FEN 局面字符串；
+6. 其余 FEN 字段用最简单的默认值；
+7. 用内置规则校验（装了 python-chess 时再加一道），并生成逐格审计图。
+
+- 适用于书籍、试卷、网页截图、对弈软件截图里的平面棋盘。
 - 不适用于 3D 棋盘、严重透视/模糊、或被裁掉边缘的图。
 - 只产出**局面** FEN，不推断棋谱历史。
 
@@ -12,68 +20,104 @@
 
 ## 快速开始
 
-### 1. 安装
+### 1. 安装依赖
 
-本仓库已经把技能放在 `.dsh/skills/chess-diagram-to-fen/`。在仓库根目录启动 DeepSeek Harness 即可直接使用。
-
-装到其他位置（用户级、Claude Code、Codex、Cursor、多 agent 共用），见 **[INSTALL.md](INSTALL.md)**。最短的 Windows 用户级安装：
-
-```powershell
-$repo = "K:\boardtofen"                     # 改成你的仓库路径
-$src = Join-Path $repo ".dsh\skills\chess-diagram-to-fen"
-$dst = Join-Path $HOME ".agents\skills"
-$target = Join-Path $dst "chess-diagram-to-fen"
-New-Item -ItemType Directory -Force -Path $dst | Out-Null
-if (Test-Path $target) { Remove-Item -Recurse -Force $target }
-Copy-Item -Recurse -Force $src $target
-Copy-Item -Path (Join-Path $repo "LICENSE-MIT"), (Join-Path $repo "LICENSE-CC0") -Destination $target
-python -m pip install -r "$target\requirements.txt"
-python "$target\scripts\selftest.py"
+```bash
+python -m pip install -r .dsh/skills/chess-diagram-to-fen/requirements.txt
+python -m pip install python-chess        # 可选，GPL-3.0；装了会多一道交叉验证
 ```
 
-`selftest.py` 输出 `PASS` 即安装完成。它不需要真实棋图，会渲染起始局面并跑通 `prepare → check → annotate`。
+依赖是 Python 3.10+、Pillow、NumPy、ONNX Runtime。**不需要** PyTorch、Ultralytics 或 OpenCV。
 
-### 2. 使用
+### 2. 下载识别模型
+
+模型必须放在识别脚本目录下，首次使用前下载一次：
+
+```bash
+python .dsh/skills/chess-diagram-to-fen/scripts/download_model.py
+```
+
+默认下载 `yolo26m-finetuned.onnx`（约 82 MB，准确率最高），保存到：
+
+```text
+.dsh/skills/chess-diagram-to-fen/scripts/models/2d-chess-ocr/yolo26m-finetuned.onnx
+```
+
+也可以：
+
+```bash
+# 9.8 MB 的小模型（快，但旧书扫描更弱）
+python .../download_model.py --variant n
+
+# 两个都下
+python .../download_model.py --variant all
+
+# 离线：复制本地 ONNX
+python .../download_model.py --copy D:\models\yolo26m-finetuned.onnx
+
+# 国内镜像
+python .../download_model.py --mirror https://hf-mirror.com
+```
+
+模型默认**不会**隐式下载：先运行 `download_model.py`，或给某次 `solve`/`stage`/`read` 加 `--download`。模型来自 Hugging Face 的 [`AndrewSpano/2d-chess-ocr`](https://huggingface.co/AndrewSpano/2d-chess-ocr)，许可声明见 [`THIRD_PARTY_NOTICES.md`](.dsh/skills/chess-diagram-to-fen/THIRD_PARTY_NOTICES.md)。
+
+### 3. 自检
+
+```bash
+python .dsh/skills/chess-diagram-to-fen/scripts/selftest.py
+```
+
+看到 `PASS` 即安装完成。自检会渲染起始局面，跑通正常、旋转 180°、无坐标、无坐标旋转四种情况，并测试 `apply` 和非法 FEN 校验。
+
+### 4. 使用
 
 在新会话里附上棋图，然后说：
 
 > 把这张棋图转成 FEN。
 
-也可以直接输入 `/chess-diagram-to-fen`。技能会按固定流程读取，并在最后给出 FEN 和一张“每个字段从哪来”的说明表。
+也可以直接输入 `/chess-diagram-to-fen`。技能会：
 
-如果你已经有一个 FEN、想核对它是否对得上图片，就把图和 FEN 一起给出；技能会用同一套审计图逐格比对，指出不一致的格子，而不是只回答“合法/不合法”。
+- 自动找棋盘、判断方向、切 64 格；
+- 跑两遍模型并逐格合并；
+- 生成 FEN 和审计图；
+- 让你核对全部 64 格，只修正真正不一致的格子。
 
-### 3. 输出长什么样
+如果你已经有一个 FEN、想核对它是否对得上图片，就把图和 FEN 一起给出；技能会用同一套审计图逐格比对。
+
+### 5. 输出长什么样
 
 ```text
-r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w - - 0 1
+FEN  r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/2P2N2/PP1P1PPP/RNBQK2R w - - 0 1
+BOARD board 0 | 800x800px | orientation white (labels) | 32 pieces
+CHECK ARBITER: PASS | python-chess: valid
+REVIEW 0 square(s): none
 ```
 
 | 字段 | 值 | 来源 |
 |---|---|---|
-| 行棋方 | `w` | 图注 “White to move” |
+| 行棋方 | `w` | 默认值；图注明确写“Black to move”时才改 |
 | 易位权 | `-` | 图上未标注 |
 | 吃过路兵 | `-` | 图上未标注 |
 | 半回合 / 回合 | `0 1` | 图上未标注 |
-| 方向 | 白方在下 | 印刷坐标；无坐标时按约定 |
+| 方向 | 白方在下 | 印刷坐标；无坐标时按模型+棋规判断，平局按约定 |
 
-这是一张“图能给出多少，就写多少”的 FEN。它的棋子位置来自图片；其余五个字段来自图注或默认假设，不会被假装成历史事实。
+这是一张“图能给出多少，就写多少”的 FEN。棋子位置来自图片；其余五个字段来自默认假设，不会被假装成历史事实。
 
 ## 它如何工作
 
 | 步骤 | 做什么 | 产物 |
 |---|---|---|
-| 1. 定位棋盘 | 检测 8×8 网格，校正倾斜，切出四象限和上下半区 | `overlay.png`、`contact.png`、`q1`–`q4`、`half_top/bottom.png` |
-| 2. 第一读 | 按象限逐格读取，写 8×8 字符账本 | `read1.txt` |
-| 3. 第二读 | **不看第一读**，按上下半区再读一遍 | `read2.txt` |
-| 4. 仲裁 | 逐格比对差异，放大争议格，记录判据 | `disputes.png`、`notes.md`、`final.txt` |
-| 5. 编码 | 从账本组装 FEN，做结构 + 合法性检查 | FEN、`ARBITER` 结果 |
-| 6. 审计 | 把 FEN 的每个符号盖回原图，逐格核对 | `audit.png` |
-| 7. 报告 | 给出 FEN 和来源说明表（provenance）；不确定的格子明确列出 | 最终答复 |
+| 1. 定位棋盘 | 2d-chess-ocr 模型检测所有棋盘；找不到时用重叠切片，再退到传统投影检测；用棋子中心拟合棋盘格，纠正边框偏差 | `overlay.png`、`board.png` |
+| 2. 判断方向 | 先看印刷的 rank-1 标记（数字 `1`）在上还是在下；没有坐标时把棋盘正反各跑一遍，用“棋子识别质量 + 棋规合法性”判决；仍平局则默认白方在下 | `report.json` 的 `orientation_source` |
+| 3. 拆格 | 方向确定后把棋盘旋正，按 rank 8→1、file a→h 拆出 64 格 | `cells/a8.png` … `cells/h1.png`、`cells.json`、`cells.png` |
+| 4. 识别 | 模型在 15% 和 35% 两种上下文边距下各跑一遍（需要时再加方向判断那一遍），按格子中心归属，逐格合并两遍结果 | `detection.png`、每格预测与置信度 |
+| 5. 编码 | 从 64 格组装 FEN；其余字段用 `w - - 0 1` | `fen.txt`、`report.json` |
+| 6. 校验 | 内置规则（王数、兵在底/顶线、子力数、升变材料、将军、易位/吃过路兵）+ python-chess 交叉验证；错误定位到格子 | `ARBITER` 结果、`review_squares` |
+| 7. 审计 | 把 FEN 每个符号盖回原图，生成全盘和四个象限的大图；低置信/两遍不一致的格子额外生成放大对比图 | `audit.png`、`audit_q1..q4.png`、`review.png` |
 
-关键点：**合法性不等于正确性**。一个把皇后从 e3 读成 f3 的 FEN 完全可以合法。第 6 步的审计图才是“FEN 是否真的对应该图”的最终检查。
+关键点：**合法性不等于正确性**。把白兵读成白象，只要少了足够的兵，局面仍然合法。第 7 步的逐格审计才是“FEN 是否真的对应该图”的最终检查。模型会在部分旧书/木刻棋子图上出错，审计图是必需的，不是可选的。
 
-完整协议见 [`SKILL.md`](.dsh/skills/chess-diagram-to-fen/SKILL.md)；识别细节和校验规则分别在 [`references/recognition.md`](.dsh/skills/chess-diagram-to-fen/references/recognition.md) 和 [`references/verification.md`](.dsh/skills/chess-diagram-to-fen/references/verification.md)。
+模型是**整盘检测器**，不是逐格分类器。把单个格子裁出来单独喂给模型会丢掉棋盘上下文（实测会把兵认成车），所以脚本先检测整盘，再把每个棋子框的中心归到 64 格之一；`cells/` 仍然逐格保存，用于审计和复查。
 
 ## FEN 是什么
 
@@ -118,15 +162,15 @@ r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4
 
 ### 图上得不到的字段
 
-一张局面图能可靠给出的是**棋子位置**，也许还有图注里的行棋方。其余字段依赖历史，图上通常看不到：
+一张局面图能可靠给出的是**棋子位置**；方向由印刷坐标或棋规判断；其余字段依赖历史，图上通常看不到：
 
 | 字段 | 图上能看到吗 | 技能默认值 |
 |---|---|---|
-| 行棋方 | 只有图注、`W`/`B` 标记或“White to move”能说明 | `w`，并标记为 assumed |
+| 行棋方 | 只有图注、`W`/`B` 标记或“White to move”能说明 | `w`，并标记为 default |
 | 易位权 | 不能。看到王车在原位，不等于还有易位权 | `-` |
 | 吃过路兵 | 只有明确标出“上一步兵走两格”时才能确定 | `-` |
 | 半回合 / 回合 | 不能 | `0 1` |
-| 方向 | 印刷坐标是证据；没有坐标时按“白方在下”约定 | 记录为假设 |
+| 方向 | 印刷坐标是证据；没有坐标时用模型+棋规判断 | 记录判断来源 |
 
 这正是本技能反复强调的：**不要因为王车在初始格就写 `KQkq`**。一张图只能证明棋子在哪，不能证明它们是否移动过。宁可写 `-`，也不要编造历史。
 
@@ -219,6 +263,9 @@ New-Item -ItemType Directory -Force -Path $dst | Out-Null
 if (Test-Path $target) { Remove-Item -Recurse -Force $target }
 Copy-Item -Recurse -Force $src $target
 Copy-Item -Path (Join-Path $repo "LICENSE-MIT"), (Join-Path $repo "LICENSE-CC0") -Destination $target
+python -m pip install -r "$target\requirements.txt"
+python "$target\scripts\download_model.py"
+python "$target\scripts\selftest.py"
 ```
 
 `~/.agents/skills/` 是通用的用户级位置：DeepSeek Harness、Cursor 会读，Codex 的部分版本也读；适合“装一次，多处用”。Claude Code 用 `~/.claude/skills/`；DSH 用户级用 `~/.dsh/skills/`。完整目标表、macOS/Linux 命令和各客户端注意事项见 **[INSTALL.md](INSTALL.md)**。
@@ -226,13 +273,17 @@ Copy-Item -Path (Join-Path $repo "LICENSE-MIT"), (Join-Path $repo "LICENSE-CC0")
 ### 依赖
 
 - Python 3.10+
-- Pillow、NumPy
-- `python-chess` 可选；`check` 有它时会多一道交叉验证
+- Pillow、NumPy、ONNX Runtime
+- `python-chess` 可选（GPL-3.0）；装了会多一道交叉验证
 
 ```bash
 python -m pip install -r .dsh/skills/chess-diagram-to-fen/requirements.txt
 python -m pip install python-chess        # 可选
 ```
+
+### 模型
+
+模型**不随仓库分发**，因为体积大。下载后放在技能目录内的 `scripts/models/2d-chess-ocr/`。默认不隐式下载；离线环境用 `--copy`。详见 [`references/ocr.md`](.dsh/skills/chess-diagram-to-fen/references/ocr.md)。
 
 ### 自检
 
@@ -240,7 +291,17 @@ python -m pip install python-chess        # 可选
 python .dsh/skills/chess-diagram-to-fen/scripts/selftest.py
 ```
 
-看到 `PASS` 即安装完成。它会在当前目录建临时目录，渲染起始局面，跑通 `prepare → check → annotate`，然后自动删除。当前目录不可写时用 `--workdir` 指定可写目录。
+看到 `PASS` 即安装完成。它会在当前目录建临时目录，渲染起始局面，跑通 `solve → apply → check → 审计`，然后自动删除。当前目录不可写时用 `--workdir` 指定可写目录；模型没下时用 `--download-model`。
+
+### 仓库测试（开发用）
+
+技能安装不需要测试目录；改代码时在仓库根运行：
+
+```bash
+python test/run_tests.py
+```
+
+单测覆盖 FEN 语法、棋规校验、方向证据、格子映射和文档指针；集成测试覆盖完整 `solve`、180° 方向和 `apply` 往返。没有 ONNX Runtime 或模型时集成测试会 `skipped`，不会失败。详见 [`test/README.md`](test/README.md)。
 
 ## 目录结构
 
@@ -251,37 +312,61 @@ boardtofen/
 ├── AGENTS.md                     # 给 coding agent 的仓库指针
 ├── LICENSE-MIT                   # 软件与脚本
 ├── LICENSE-CC0                   # 文档与技能文本
-├── .gitignore                    # work/、临时目录、pycache
+├── .gitignore                    # work/、模型权重、临时目录、pycache
+├── test/                         # 仓库测试（不属于技能安装目录）
+│   ├── run_tests.py
+│   ├── test_*.py                 # rules/geometry/detector/docs/pipeline/integration
+│   └── README.md
 └── .dsh/skills/chess-diagram-to-fen/
-    ├── SKILL.md                    # 技能入口：七步协议
-    ├── requirements.txt            # Pillow + NumPy
+    ├── SKILL.md                    # 技能入口：识别 → 审计 → 报告
+    ├── requirements.txt            # Pillow + NumPy + ONNX Runtime
+    ├── THIRD_PARTY_NOTICES.md      # 2d-chess-ocr 版权与鸣谢、依赖许可
+    ├── LICENSES/
+    │   └── 2d-chess-ocr-MIT.txt
     ├── references/
-    │   ├── recognition.md          # 棋子轮廓、字母记谱、印刷伪影
+    │   ├── ocr.md                  # 模型类别、双读合并、方向、阈值
+    │   ├── manual.md               # 模型不可用时的双读/仲裁/审计流程
+    │   ├── recognition.md          # 棋子轮廓、字母记谱、伪影
     │   └── verification.md         # 六字段、合法性、审计规则
     └── scripts/
-        ├── boardtool.py            # 切图、比对、FEN 组装、检查、审计
-        └── selftest.py             # 安装自检
+        ├── boardtool.py            # CLI 入口（solve/stage/read/apply/check…）
+        ├── download_model.py       # 下载/复制 ONNX 权重
+        ├── selftest.py             # 安装自检
+        ├── models/                 # 模型权重（gitignore，运行时下载）
+        │   └── 2d-chess-ocr/
+        └── chessdiagram/           # 识别、几何、规则、审计实现
+            ├── detector.py
+            ├── geometry.py
+            ├── rules.py
+            ├── artifacts.py
+            ├── pipeline.py
+            ├── model_store.py
+            ├── ledger.py
+            ├── imaging.py
+            └── constants.py
 ```
 
-复制到其他客户端时，保持 `chess-diagram-to-fen/` 整个目录的层级，不要把里面的文件摊平到 skills 根目录。
+复制到其他客户端时，保持 `chess-diagram-to-fen/` 整个目录的层级，不要把里面的文件摊平到 skills 根目录。模型目录可以随目录一起复制；从仓库新克隆时需要重新运行 `download_model.py`。
 
 仓库根的 `AGENTS.md` 是给 coding agent 的快速指针（先读 INSTALL §5）；人看 README 和 INSTALL 即可。
 
 ## 设计原则
 
-- **两次独立读取**：象限扫描和半区扫描用不同的切法、不同的顺序；同一张裁剪图读两遍不算独立。
-- **差异必须仲裁**：每个不一致的格子都要放大、看轮廓、记录判据；不靠“哪个更像”掷硬币。
-- **元数据默认值显式化**：图上没写的字段用默认值，并在报告里列为假设。
-- **合法不等于正确**：`check` 只证明 FEN 合法；`annotate` 的逐格审计才证明它对应图片。
+- **模型先行，人工审计兜底**：模型负责找棋盘和棋子，人/agent 负责逐格核对标签；两件事分开，避免“从零读 64 格”的疲劳错误。
+- **多视图独立识别**：同一棋盘在两种上下文边距（需要时再加两个方向）下各跑一遍，逐格合并；不一致的格子自动进入 review。
+- **方向有证据链**：印刷坐标 → 模型+棋规 → 默认白方在下；来源写进报告，不假装是事实。
+- **合法不等于正确**：`check` 只证明 FEN 合法；`audit` 的逐格标签才证明它对应图片。
+- **元数据默认值显式化**：图上没写的字段用 `w - - 0 1`，并在报告里列为假设。
 - **不恢复被裁掉的信息**：边缘缺一格、缺一个子，就要求换一张完整图，而不是猜。
 - **不伪造历史**：不因为王车在原位就写 `KQkq`，不因为“看起来能吃过路兵”就写目标格。
 - **原图只读**：所有中间产物写到 `work/`，不改动输入图片。
 
 ## 限制
 
-- 只支持平面 2D 棋盘；照片透视严重时先裁剪、矫正，再跑 `prepare`。
-- 极低分辨率、棋子被箭头/高亮大面积遮挡时，识别会退化；技能会明确报告不确定的格子，而不是给一个虚假的置信度。
-- 图上有多个棋盘时，需要先裁出目标棋盘；每个棋盘单独转写。
+- 只支持平面 2D 棋盘；照片透视严重时先裁剪、矫正，再跑 `solve`。
+- 模型对现代 figurine 棋子、屏幕截图最稳；很小的旧书木刻、特殊棋子风格、字母棋图可能把兵认成象，或整类认错。低置信和两遍不一致会提示，但**高置信错误仍可能发生**，所以必须看审计图。
+- 极低分辨率、棋子被箭头/高亮大面积遮挡时，识别会退化；技能会明确列出 review 格子，而不是给一个虚假的置信度。
+- 图上有多个棋盘时，用 `--board-index` 选目标；每个棋盘单独转写。
 - 不处理 Chess960 的易位权记法（标准 FEN 的 `KQkq` 之外的文件字母形式）。
 - 不判断三次重复；50 回合规则只能提供当前半回合钟，不能还原完整对局历史。
 - 3D 棋子、动画截图、严重压缩伪影不在保证范围内。
@@ -291,20 +376,37 @@ boardtofen/
 **技能没有出现在列表里？**
 先看 [INSTALL.md 的故障排查](INSTALL.md#7-故障排查)。最常见的原因是放错层级（`<root>/chess-diagram-to-fen/SKILL.md` 才是对的）、DSH 会话不在项目根，或客户端需要重开会话。
 
-**`prepare` 说找不到 8×8 网格？**
-这不是安装问题。用 `grid` 生成带像素坐标的图，读出棋盘外框的 `x0,y0,x1,y1`，再跑 `prepare --bbox`。框的是棋盘外网格线，不是纸张边缘。
+**`solve` 说找不到棋盘？**
+先跑 `stage` 看 `overlay.png`，再用 `grid` 读出棋盘外框的 `x0,y0,x1,y1`，然后 `solve --bbox`。框的是棋盘外网格线，不是纸张边缘。
 
 **图是黑方视角？**
-加 `--flip`。印刷坐标跟着棋子走，翻转后接触图会归一化为白方在下。
+有印刷坐标时技能会自动判断；没有坐标时也会用模型+棋规判断。判断错了就加 `--orientation black` 或 `--flip` 重跑。
 
 **一页有好几张图？**
-先裁出目标棋盘，再逐张处理。不要把整页扔给识别。
+用 `--board-index 0`、`1`… 逐个处理；默认选最大的那张。每张棋盘单独转写。
+
+**模型没下/公司网络不通？**
+`python scripts/download_model.py --copy <本地.onnx>`，或加 `--mirror https://hf-mirror.com`。需要临时下载时给 `solve`/`stage`/`read` 加 `--download`。
 
 **FEN 合法，但和图片不一样？**
-跑 `annotate`，把 FEN 的符号盖回原图逐格看。合法只说明局面没违反规则，不说明读对了。
+跑 `solve` 后看 `audit_q1..q4.png`，把 FEN 符号盖回原图逐格看。合法只说明局面没违反规则，不说明读对了。发现不一致用 `apply --set` 改格子，再 `check`。
 
 **能直接读 PGN 吗？**
 这个技能的目标是“图 → 局面 FEN”。PGN 是另一类输入；如果你有棋谱，直接用棋谱回放更可靠。
+
+## 鸣谢与第三方许可
+
+本技能的核心识别模型来自 **2d-chess-ocr**：
+
+- 作者：**Andreas Spanopoulos**（GitHub [@AndrewSpano](https://github.com/AndrewSpano)）
+- 项目：<https://github.com/AndrewSpano/2d-chess-ocr>
+- 权重：<https://huggingface.co/AndrewSpano/2d-chess-ocr>
+- 项目许可：**MIT**；完整文本见 [`LICENSES/2d-chess-ocr-MIT.txt`](.dsh/skills/chess-diagram-to-fen/LICENSES/2d-chess-ocr-MIT.txt)
+- 权重文件内嵌元数据：**AGPL-3.0**（作者标为 Ultralytics）
+
+该模型使用 Ultralytics YOLO26 训练。仓库和 Hugging Face 模型卡标 MIT，但 ONNX 文件内的 `license` 字段写的是 `AGPL-3.0 License`，这是一处真实的许可歧义。本技能**不包含也不导入** Ultralytics 代码，也不在仓库里再分发权重，只通过 ONNX Runtime 运行下载后的 ONNX 图。若你要再分发权重或做商业产品，请先核对两边的许可（或联系模型作者/Ultralytics）。完整说明见 [`THIRD_PARTY_NOTICES.md`](.dsh/skills/chess-diagram-to-fen/THIRD_PARTY_NOTICES.md)。
+
+运行时依赖：ONNX Runtime（MIT）、Pillow（HPND）、NumPy（BSD-3-Clause）、python-chess（GPL-3.0，可选、不随仓库分发）。
 
 ## 许可证
 
@@ -318,11 +420,13 @@ boardtofen/
 - MIT 允许商用、修改、再分发，要求保留版权与许可声明。
 - CC0 在适用法律允许的最大范围内放弃版权及相关权利，不要求署名。
 - MIT 的版权行目前写作 `Copyright (c) 2026 boardtofen contributors`；以个人或组织名义发布时，替换成实际版权人即可。
+- 第三方模型、库的许可见 [`THIRD_PARTY_NOTICES.md`](.dsh/skills/chess-diagram-to-fen/THIRD_PARTY_NOTICES.md)，不改变本仓库自身代码的 MIT 许可。
 
 ## 参考
 
 - [Agent Skills 规范](https://agentskills.io/specification)：`SKILL.md`、`references/`、`scripts/` 的通用格式
 - [PGN 标准](https://www.saremba.de/chessgml/standards/pgn/pgn-complete.htm)：FEN 与 PGN 的正式定义
-- [python-chess](https://python-chess.readthedocs.io/)：合法性校验与棋谱解析
-- [`SKILL.md`](.dsh/skills/chess-diagram-to-fen/SKILL.md)：本技能的完整七步协议
+- [2d-chess-ocr](https://github.com/AndrewSpano/2d-chess-ocr)：识别模型、类别定义与评估
+- [python-chess](https://python-chess.readthedocs.io/)：合法性校验与棋谱解析（可选）
+- [`SKILL.md`](.dsh/skills/chess-diagram-to-fen/SKILL.md)：本技能的识别/审计协议
 - [`INSTALL.md`](INSTALL.md)：各客户端安装、依赖、自检、故障排查

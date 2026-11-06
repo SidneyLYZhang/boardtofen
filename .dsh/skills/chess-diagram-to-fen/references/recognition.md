@@ -1,6 +1,26 @@
 # Recognition reference
 
-Read this before the first read when the diagram is not a standard Staunton figurine set, or when a square is small, low-contrast, lettered, or covered by an annotation.
+The primary path is model-first: `solve` finds the board, reads all pieces with
+2d-chess-ocr, and writes a 64-square audit. This file is for **auditing** those
+labels and for the manual fallback when the model cannot run. Read it when the
+diagram is not a standard Staunton figurine set, or when a square is small,
+low-contrast, lettered, or covered by an annotation.
+
+## Model-first reading
+
+- The detector reads the **whole board**; the skill assigns each box centre to a
+  square. Cropping one cell and running the detector on it does not work — the
+  piece fills the frame and the model loses board context.
+- The model runs at two context margins and, when needed, at both 180° orientations.
+  Agreement between passes raises confidence; disagreement and low confidence are
+  recorded as review flags.
+- The model is strongest on modern figurine sets and clean screenshots. Small
+  old woodcuts, unusual piece sets, and lettered diagrams need the audit more,
+  not less: a high-confidence wrong label is possible.
+- `review.png` shows the flagged cells with their alternatives. It is a triage
+  aid, not a substitute for the full 64-square audit in `audit_q1..q4.png`.
+- If the model cannot run, use the manual read → second read → adjudicate →
+  audit sequence below and in `SKILL.md` “Manual fallback”.
 
 ## Decision order for one square
 
@@ -14,12 +34,32 @@ Read this before the first read when the diagram is not a standard Staunton figu
 
 ## Orientation
 
-- Printed coordinates are ground truth. Read the label at each edge; do not assume the bottom-left is a1. Some books print Black's view with files h→a and ranks 8→1.
-- Without coordinates, the convention is White at bottom. Record it as an assumption; it is not evidence.
-- **Square colour cannot orient the board.** A 180° rotation maps every dark square to a dark square and every light square to a light square, so a standard-coloured board looks standard from either side. The a1-dark rule only confirms the colouring convention, not who is at the bottom.
-- Captions like "White to move" do not state the viewpoint. "From Black's perspective", "Black at bottom", or a printed Black-to-move marker near the top does.
-- Piece placement can corroborate but never overrule printed labels: kings on rank 1/8, queens on d1/d8, pawn masses on ranks 2/7. A position with both sides castled or advanced gives weak evidence.
-- After `prepare`, check the contact image's corner labels. If the printed top-left was h1, the board needs `--flip`; remaking the views is cheaper than transcribing a mirrored board.
+The skill applies this order automatically; use it manually only when overriding.
+
+1. **Printed coordinates are ground truth.** The detector recognizes the printed
+   digit `1` (class 13) beside the rank labels. Bottom → White at bottom; top →
+   Black at bottom. Do not assume the bottom-left is a1.
+2. **No labels: chess rules + OCR evidence.** Both the upright and 180°-rotated
+   board are read. The correct orientation yields ~30 well-recognized pieces and
+   a legal position; the wrong one yields a handful of upside-down pieces and
+   illegal pawn ranks/kings.
+3. **Tie: White at bottom.** The book convention is an assumption, recorded as
+   `default`; it is not evidence.
+4. `--orientation white|black` or `--flip` overrides and is recorded as `user`.
+
+- **Square colour cannot orient the board.** A 180° rotation maps every dark
+  square to a dark square and every light square to a light square, so a
+  standard-coloured board looks standard from either side. The a1-dark rule only
+  confirms the colouring convention, not who is at the bottom.
+- Captions like "White to move" do not state the viewpoint. "From Black's
+  perspective", "Black at bottom", or a printed Black-to-move marker near the
+  top does.
+- Piece placement can corroborate but never overrule printed labels: kings on
+  rank 1/8, queens on d1/d8, pawn masses on ranks 2/7. A position with both sides
+  castled or advanced gives weak evidence.
+- After `solve`, check `audit.png`’s corner labels and the report’s
+  `orientation_source`. If the printed top-left was h1, the board needs a flip;
+  `apply` cannot fix orientation — rerun with `--orientation black`.
 
 ## Figurine silhouettes
 
@@ -86,8 +126,20 @@ Useful negative spaces: the gap between a knight's muzzle and neck, the slit thr
 
 ## Reading discipline
 
-- The quadrant images are the primary read; the half-board images are the independent second read. Do not use the same crop twice and call it independent.
-- Read the square centre, write the symbol immediately, then move on. Do not hold a row in working memory.
-- Use the printed coordinates to navigate, not memory of "the knight was around here".
-- Before leaving a quadrant, check that every rank segment has exactly 4 symbols and that no square is blank.
-- A contextual impossibility is a reason to zoom, not a reason to change the square. The image is the source of truth; the rules only tell you where to look again.
+- In the normal path, the question for each square is **“does this tag match the
+  printed piece?”**, not “what piece is this?”. Verification is easier and more
+  reliable than a from-scratch read.
+- Audit all four quadrant images (`audit_q1..q4.png`). The review sheet only
+  covers flagged squares; a confident miss will not appear there.
+- Use the printed coordinates to navigate, not memory of "the knight was around
+  here".
+- Before leaving a quadrant, check that every label sits on a piece of the same
+  colour and type, and that every dot is really empty.
+- A contextual impossibility is a reason to zoom, not a reason to change the
+  square. The image is the source of truth; the rules only tell you where to look
+  again.
+- In the manual fallback, the quadrant images are the primary read and the
+  half-board images are the independent second read. Do not use the same crop
+  twice and call it independent. Read the square centre, write the symbol
+  immediately, then move on. Before leaving a quadrant, check that every rank
+  segment has exactly 4 symbols.

@@ -1,6 +1,12 @@
 # Verification reference
 
-Read this when setting the six FEN fields, when the arbiter objects, or when deciding whether an illegal-looking diagram is a misread or a genuinely illegal position.
+Read this when setting the six FEN fields, when the arbiter objects, or when
+deciding whether an illegal-looking diagram is a misread or a genuinely illegal
+position.
+
+The built-in validator always runs. `python-chess` is optional (GPL-3.0) and adds
+attack analysis plus a second opinion; `check` shows its verdict when installed.
+The default metadata is `w - - 0 1`; change a field only when the page states it.
 
 ## The six fields
 
@@ -50,29 +56,49 @@ The halfmove clock is the number of plies since the last capture or pawn move. T
 | `N kings` | A king was missed, two king-like glyphs were read as kings, or colours are inverted. | Find both kings; zoom the cross-topped glyphs. |
 | `pawn on ... rank 1/8` | A bishop/queen was read as a pawn, or the board is rank-reversed. | Zoom the square; check the neighbouring back rank. |
 | `>16 pieces` or `>8 pawns` | A square was duplicated, colours are inverted, or both reads copied the same skip. | Compare the two ledgers; count pieces per side. |
-| `Black is in check but it is White's turn` | The turn caption was misread, or a king/checking piece is misplaced. | Re-read the caption before moving any piece. |
+| `promotion-material` / “N non-pawns with M pawns” | Too many non-pawns for the missing pawns; a pawn was read as a bishop/queen/rook/knight. | Inspect the extra non-pawn; the same-colour bishops are the usual trap. |
+| `Black is in check but it is White's turn` | The turn caption was misread, or a king/checking piece is misplaced. | Re-read the caption before moving any piece; `--turn b` if the page says so. |
 | `both kings are in check` | At least one king is misread or two pieces are swapped. | Find both kings and their attackers. |
 | `kings are adjacent` | A king is misread, or two squares are swapped. | Zoom both kings; re-check the back ranks. |
 | `castling right ... requires ...` | Castling rights were invented, or the king/rook is misread. | Remove the right unless the page gives it; check e1/e8/h1/h8/a1/a8. |
 | `en passant ... no pawn` | The en-passant target was invented, or a pawn rank is wrong. | Re-read the last-move caption and the pawn's rank. |
-| `python-chess invalid` but no own error | A subtle legality issue (side not to move in check, impossible check count). | Inspect the status; still treat the image as source of truth. |
-| `LEDGER: structurally OK` but the FEN is wrong | A legal misread. | Run the audit image; legality cannot catch it. |
+| `python-chess: invalid (...)` but no built-in error | A subtle legality issue (impossible check count, opposite check, bad EP). | Inspect the status; still treat the image as source of truth. |
+| `LEDGER: structurally OK` but the FEN is wrong | A legal misread, possibly a confident model error. | Run the audit images; legality cannot catch it. |
+| `review_squares` includes a square you think is correct | A low-confidence read or two passes disagreed. | Open `review.png`; the alternative is shown. The audit is still the authority. |
 
 ## The audit is the truth check
 
-`check` proves the FEN is well formed and legal. It does not prove the FEN matches the picture. A queen on e3 instead of f3 can be perfectly legal.
+`check` proves the FEN is well formed and legal. It does not prove the FEN matches
+the picture. A queen on e3 instead of f3 can be perfectly legal; a pawn read as a
+bishop is legal if enough pawns are also missing. The model can be confidently
+wrong, so **every square is audited**, not just the flagged ones.
 
-The final audit uses `annotate`: the FEN symbol is stamped into every source square, so the question becomes perceptual, not legal — does this label sit on the piece it names? On a lettered diagram the audit label is FEN's English letter, not the book's: translate first (`D`→`Q`, `T`→`R`, `L`→`B`, `S`→`N`). A printed `D` under a red `Q` is a match, not a mismatch.
+`solve` writes `audit.png` and four larger `audit_q1..q4.png`: the FEN symbol is
+stamped into every source square, so the question becomes perceptual, not legal —
+does this label sit on the piece it names? Orange borders mark the model's own
+review set.
+
+On a lettered diagram the audit label is FEN's English letter, not the book's:
+translate first (`D`→`Q`, `T`→`R`, `L`→`B`, `S`→`N`). A printed `D` under a red
+`Q` is a match, not a mismatch.
 
 Check all four quadrants, including empty squares. Pay special attention to:
 
-- **Rank order**: the top row of the image is rank 8. If the bottom row is labelled 8, the board is upside down.
-- **Colour**: in a starting-like position, White occupies ranks 1–2. Lowercase there means the colours are inverted.
-- **The last row you read**: fatigue errors cluster at the end of a sweep. Re-read rank 1 and rank 8 deliberately.
-- **Pieces under arrows or highlights**: the annotation label can confirm the identity you inferred.
+- **Rank order**: the top row of the image is rank 8. If the bottom row is
+  labelled 8, the orientation is wrong; rerun with `--orientation black`.
+- **Colour**: in a starting-like position, White occupies ranks 1–2. Lowercase
+  there means the colours are inverted.
+- **The last row you read**: fatigue errors cluster at the end of a sweep.
+  Re-read rank 1 and rank 8 deliberately.
+- **Pieces under arrows or highlights**: the annotation label can confirm the
+  identity you inferred.
 - **Squares you "remember" as empty**: dots are data. Check them.
+- **The review set**: compare `review.png`'s alternatives with the silhouette;
+  a close alternative is the model asking for a second look.
 
-If the audit finds a mismatch, fix `final.txt`, rebuild the FEN, re-run `check`, and regenerate the audit image. Do not patch the FEN string directly; the ledger is the single source of truth.
+If the audit finds a mismatch, correct the cells with `apply --set`, rerun
+`check`, and inspect the fresh audit. Do not patch the FEN string directly; the
+cells in `board.json` are the single source of truth.
 
 ## Reporting uncertainty
 

@@ -1,4 +1,12 @@
 work/
 .boardtofen-selftest-*/
+test/.chess-test-*/
 __pycache__/
 *.pyc
+.piptmp/
+.pydeps/
+tmp_*/
+tmp_*.*
+
+# Recognition weights are downloaded into the skill, not committed.
+.dsh/skills/chess-diagram-to-fen/scripts/models/
